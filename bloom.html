@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>bloom3d</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+html,body{margin:0;height:100%;background:#000}
+body{display:flex;flex-direction:column;align-items:center;justify-content:center;font:12px ui-monospace,Menlo,Consolas,monospace;color:#7a8299}
+canvas{width:min(100vw,calc((100vh - 40px)*960/760));aspect-ratio:960/760;display:block;cursor:pointer}
+p{margin:8px 0 0}
+</style></head><body>
+<canvas id="c" width="960" height="760"></canvas>
+<p>tap or press space to replay</p>
+<script>
+const W=960,H=760,FS=10,DURATION=10,MESSAGE="let it bloom ",TYPED="bloom()";
+const RAMP=".:;=+*xo%#&@",GLITCH="01<>{}[]#$%&*+=?!ABXZ";
+const ELEV=55*Math.PI/180,SCALE=265,CY=H*0.56;
+const LN=(()=>{const l=[-0.45,-0.75,0.9],m=Math.hypot(...l);return l.map(v=>v/m)})();
+const LAYERS=[[6,1,.34,80,2,5.2,.7,0,1],[6,.8,.3,58,2.3,5.5,.5,Math.PI/6,.95],[5,.62,.27,40,2.6,5.8,.35,.3,.9],[4,.46,.24,26,2.9,6.1,.2,.9,.85]];
+const BLOW=7.6,U=64,V=45;
+
+const cv=document.getElementById("c"),ctx=cv.getContext("2d");
+const FONT=`bold ${FS}px consolas,menlo,"dejavu sans mono","liberation mono","courier new",monospace`;
+ctx.font=FONT;
+const cw=Math.max(5,Math.round(ctx.measureText("M").width)),ch=Math.round(FS*1.2);
+const COLS=Math.floor(W/cw),ROWS=Math.floor(H/ch),NCELL=COLS*ROWS;
+
+function mul(a){return()=>{a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const rnd=mul(11);
+const gauss=()=>Math.sqrt(-2*Math.log(1-rnd()))*Math.cos(2*Math.PI*rnd());
+const uni=(a,b)=>a+(b-a)*rnd();
+const ss=(a,b,x)=>{const k=Math.min(1,Math.max(0,(x-a)/(b-a)));return k*k*(3-2*k)};
+const clamp=(x,a,b)=>x<a?a:x>b?b:x;
+
+const SETTLE=new Float32Array(NCELL).map(()=>.12+rnd()*.5);
+const LETTERS=[...MESSAGE].filter(c=>c!==" ");
+
+const pets=[];
+LAYERS.forEach(([n,L,Wd,op,t0,t1,curl,az,tint],li)=>{
+ for(let k=0;k<n;k++)pets.push({theta:az+2*Math.PI*k/n+uni(-.08,.08),L:L*uni(.95,1.05),W:Wd,open:op*Math.PI/180,
+  t0:t0+uni(-.1,.1),t1,curl,tint:tint*uni(.8,1.1),delay:BLOW+.22*li+uni(0,.35)});
+});
+const P=pets.length,PV=U*V,NPET=P*PV,NC=2600,N=NPET+NC;
+
+const px=new Float32Array(N),py=new Float32Array(N),pz=new Float32Array(N);
+const qx=new Float32Array(N),qy=new Float32Array(N),qz=new Float32Array(N);
+const col=new Float32Array(N*3),dly=new Float32Array(N),jit=new Float32Array(N*3),ao=new Float32Array(N),pid=new Int32Array(N);
+const STOPS=[[.7,.02,.2],[1,.12,.38],[1,.42,.62],[1,.8,.84]];
+const UCOL=[];
+for(let i=0;i<U;i++){const cu=i/(U-1)*(STOPS.length-1),i0=Math.min(Math.floor(cu),STOPS.length-2),f=cu-i0;UCOL.push(STOPS[i0].map((a,m)=>a*(1-f)+STOPS[i0+1][m]*f))}
+for(let p=0;p<P;p++)for(let i=0;i<U;i++)for(let j=0;j<V;j++){
+ const k=p*PV+i*V+j,u=i/(U-1),v=-1+2*j/(V-1);
+ for(let m=0;m<3;m++)col[k*3+m]=UCOL[i][m]*pets[p].tint;
+ ao[k]=(.25+.75*Math.pow(u,.8))*(1-.35*Math.pow(Math.abs(v),3));
+ dly[k]=pets[p].delay;
+}
+for(let k=0;k<NPET;k++){jit[k*3]=gauss()*.6;jit[k*3+1]=gauss()*.6;jit[k*3+2]=gauss()*.9;pid[k]=Math.floor(rnd()*10000)}
+const C_R=new Float32Array(NC),C_A=new Float32Array(NC);
+for(let k=0;k<NC;k++){
+ const i=NPET+k;C_R[k]=Math.sqrt((k+.5)/NC);C_A[k]=k*2.39996323;
+ jit[i*3]=gauss()*.5;jit[i*3+1]=gauss()*.5;jit[i*3+2]=gauss()*.9;pid[i]=Math.floor(rnd()*10000);
+ const r=C_R[k];col[i*3]=1;col[i*3+1]=.85*(1-r)+.45*r;col[i*3+2]=.35*(1-r)+.08*r;
+ ao[i]=1;dly[i]=BLOW+1.15;
+}
+
+const tmp=new Float32Array(PV*3);
+function petals(t){
+ const du=1/(U-1),r6=6*Math.PI/180;
+ for(let p=0;p<P;p++){
+  const q=pets[p],prog=ss(q.t0,q.t1,t),alpha=r6+(q.open-r6)*prog,cp=q.curl*prog;
+  const ct=Math.cos(q.theta),st=Math.sin(q.theta);
+  let rho=0,z=0;
+  for(let i=0;i<U;i++){
+   const u=i/(U-1),phi=alpha*(.25+.75*u)+cp*u*u;
+   rho+=Math.sin(phi)*du*q.L;z+=Math.cos(phi)*du*q.L;
+   const w=q.W*Math.pow(Math.max(0,Math.sin(Math.PI*Math.pow(u,1.6))),.7),cph=Math.cos(phi),sph=Math.sin(phi);
+   for(let j=0;j<V;j++){
+    const v=-1+2*j/(V-1),offT=v*w,offN=.55*v*v*w,R=.04+rho-offN*cph,Z=z+offN*sph,o=(i*V+j)*3;
+    tmp[o]=R*ct-offT*st;tmp[o+1]=R*st+offT*ct;tmp[o+2]=Z;
+   }
+  }
+  for(let i=0;i<U;i++)for(let j=0;j<V;j++){
+   const a=i==0?i:i-1,b=i==U-1?i:i+1,c=j==0?j:j-1,d=j==V-1?j:j+1;
+   const ia=(a*V+j)*3,ib=(b*V+j)*3,ic=(i*V+c)*3,id=(i*V+d)*3;
+   const ux=tmp[ib]-tmp[ia],uy=tmp[ib+1]-tmp[ia+1],uz=tmp[ib+2]-tmp[ia+2];
+   const vx=tmp[id]-tmp[ic],vy=tmp[id+1]-tmp[ic+1],vz=tmp[id+2]-tmp[ic+2];
+   let nx=uy*vz-uz*vy,ny=uz*vx-ux*vz,nz=ux*vy-uy*vx;
+   const m=Math.hypot(nx,ny,nz)+1e-9,k=p*PV+i*V+j,o=(i*V+j)*3;
+   px[k]=tmp[o];py[k]=tmp[o+1];pz[k]=tmp[o+2];qx[k]=nx/m;qy[k]=ny/m;qz[k]=nz/m;
+  }
+ }
+}
+function centre(t){
+ const e=ss(3,5.5,t),rc=.17*e;
+ for(let k=0;k<NC;k++){
+  const i=NPET+k,r=C_R[k]*rc,c=Math.cos(C_A[k]),s=Math.sin(C_A[k]);
+  px[i]=r*c;py[i]=r*s;pz[i]=.1+.1*(1-C_R[k]*C_R[k])*e;
+  let nx=c*C_R[k]*.7,ny=s*C_R[k]*.7,nz=1;const m=Math.hypot(nx,ny,nz);
+  qx[i]=nx/m;qy[i]=ny/m;qz[i]=nz/m;
+ }
+}
+
+const CD=[0,-Math.cos(ELEV),Math.sin(ELEV)],CU=[0,Math.sin(ELEV),Math.cos(ELEV)];
+const HV=(()=>{const h=[LN[0]+CD[0],LN[1]+CD[1],LN[2]+CD[2]],m=Math.hypot(...h);return h.map(v=>v/m)})();
+const WIND=[1.7,0,.75];
+const Lg=new Float32Array(NCELL),Cr=new Float32Array(NCELL),Cgc=new Float32Array(NCELL),Cb=new Float32Array(NCELL);
+const Dg=new Float32Array(NCELL),Fg=new Uint8Array(NCELL),Pg=new Int32Array(NCELL);
+
+function rasterize(t){
+ const s=ss(.9,2.6,t)*(1+.02*Math.sin(2*Math.PI*(t-6)/2.4)*ss(6,6.8,t));
+ if(s<=0)return false;
+ petals(t);centre(t);
+ Lg.fill(0);Dg.fill(-3);Fg.fill(0);Cr.fill(0);Cgc.fill(0);Cb.fill(0);
+ const yaw=.4+.32*t,cy=Math.cos(yaw),sy=Math.sin(yaw);
+ for(let k=0;k<N;k++){
+  const tau=Math.max(0,t-dly[k]),brk=Math.max(0,tau-.3),id=pid[k];
+  const keep=brk==0||id%9==0;if(!keep)continue;
+  const fade=Math.min(1,Math.max(0,1-tau/1.5));if(fade<=0)continue;
+  let x=px[k]*s,y=py[k]*s,z=pz[k]*s;
+  let X=cy*x-sy*y,Y=sy*x+cy*y;
+  let nX=cy*qx[k]-sy*qy[k],nY=sy*qx[k]+cy*qy[k],nZ=qz[k];
+  const t2=tau*tau*1.5,jb=Math.pow(brk,1.5)*.9;
+  X+=WIND[0]*t2+jit[k*3]*jb;Y+=WIND[1]*t2+jit[k*3+1]*jb;z+=WIND[2]*t2+jit[k*3+2]*jb+.1*Math.sin(tau*5+id%7)*brk;
+  const depth=Y*CD[1]+z*CD[2];
+  let nd=nY*CD[1]+nZ*CD[2];
+  if(nd<0){nX=-nX;nY=-nY;nZ=-nZ;nd=-nd}
+  const diff=Math.max(0,nX*LN[0]+nY*LN[1]+nZ*LN[2]);
+  const spec=Math.pow(Math.max(0,nX*HV[0]+nY*HV[1]+nZ*HV[2]),24);
+  const lum=(.25+.95*diff+.3*(1-nd)*(1-nd))*(.35+.65*ao[k]);
+  const dof=.55+.45*clamp((depth+.8)/1.6,0,1),df=dof*fade;
+  const kk=5/(5-depth),sx=X*kk,sv=(Y*CU[1]+z*CU[2])*kk;
+  const c=Math.floor((W/2+sx*SCALE)/cw),r=Math.floor((CY-sv*SCALE)/ch);
+  if(c<0||c>=COLS||r<0||r>=ROWS)continue;
+  const cell=r*COLS+c;if(!(depth>Dg[cell]))continue;
+  Dg[cell]=depth;Lg[cell]=clamp((lum+.45*spec)*df,0,1);
+  Cr[cell]=(col[k*3]*lum*1.2+.45*spec)*df;Cgc[cell]=(col[k*3+1]*lum*1.2+.45*spec)*df;Cb[cell]=(col[k*3+2]*lum*1.2+.45*spec)*df;
+  Fg[cell]=brk>0?1:0;Pg[cell]=id;
+ }
+ return true;
+}
+
+const firstOn=new Float32Array(NCELL).fill(Infinity);
+const small=[5,18].map(d=>{const c=document.createElement("canvas");c.width=Math.floor(W/d);c.height=Math.floor(H/d);return c});
+let start=performance.now(),lastT=0;
+const BLUE="rgb(220,230,255)";
+function put(ch_,c,r,color){ctx.fillStyle=color;ctx.fillText(ch_,c*cw,r*ch)}
+
+function frame(now){
+ const t=((now-start)/1000)%DURATION;
+ if(t<lastT)firstOn.fill(Infinity);lastT=t;
+ ctx.globalCompositeOperation="source-over";ctx.fillStyle="#000";ctx.fillRect(0,0,W,H);
+ ctx.font=FONT;ctx.textBaseline="top";
+ if(rasterize(t)){
+  const filled=new Uint8Array(NCELL);
+  for(let i=0;i<NCELL;i++)filled[i]=Lg[i]>.03?1:0;
+  const F=i=>filled[i]?Dg[i]:-3;
+  for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++){
+   const i=r*COLS+c;if(!filled[i])continue;
+   let chr,cr=Cr[i],cg=Cgc[i],cb=Cb[i];
+   // edge detection
+   const Fc=Dg[i],nb=[c<COLS-1?F(i+1):-3,c>0?F(i-1):-3,r<ROWS-1?F(i+COLS):-3,r>0?F(i-COLS):-3];
+   const jump=Math.max(...nb.map(v=>Math.abs(Fc-v))),edge=!Fg[i]&&jump>.35&&(jump>2||Fc>=Math.max(...nb));
+   chr=RAMP[clamp(Math.floor(Lg[i]*(RAMP.length-1)),0,RAMP.length-1)];
+   if(Lg[i]>.86)chr=MESSAGE[i%MESSAGE.length];
+   if(edge){
+    const gx=(nb[0]-nb[1])/cw,gy=(nb[2]-nb[3])/ch;
+    let a=(Math.atan2(-gx,-gy)*180/Math.PI)%180;if(a<0)a+=180;
+    chr=(a<22.5||a>=157.5)?"-":a<67.5?"/":a<112.5?"|":"\\";
+    cr=cr*1.25+.06;cg=cg*1.25+.06;cb=cb*1.25+.06;
+   }
+   if(Fg[i])chr=LETTERS[Pg[i]%LETTERS.length];
+   if(t<5.5){
+    if(firstOn[i]===Infinity)firstOn[i]=t;
+    if(t-firstOn[i]<SETTLE[i]){chr=GLITCH[Math.floor(Math.random()*GLITCH.length)];cr=cr*.5+.45;cg=cg*.5+.45;cb=cb*.5+.45}
+   }
+   const R=Math.floor(clamp(cr,0,1)*255/10)*10,G=Math.floor(clamp(cg,0,1)*255/10)*10,B=Math.floor(clamp(cb,0,1)*255/10)*10;
+   if(!(R|G|B))continue;
+   put(chr,c,r,`rgb(${R},${G},${B})`);
+  }
+  if(t<5.5)for(let i=0;i<NCELL;i++)if(!filled[i])firstOn[i]=Infinity;
+ }
+ // typed text layer
+ const row=Math.floor(CY/ch),blink=(t*2.2)%1<.55,c0=Math.floor(COLS/2)-Math.floor(TYPED.length/2);
+ if(t<.3){if(blink)put("_",Math.floor(COLS/2),row,BLUE)}
+ else if(t<.85){const n=Math.floor((t-.3)/.55*TYPED.length)+1,s=(TYPED.slice(0,n)+"_");for(let i=0;i<s.length;i++)put(s[i],c0+i,row,BLUE)}
+ else if(t<1.3){
+  const f=1-(t-.85)/.45;
+  for(let i=0;i<TYPED.length;i++){
+   let c=TYPED[i];if(Math.random()<.6)c=GLITCH[Math.floor(Math.random()*GLITCH.length)];
+   if(Math.random()<f){const v=Math.floor(255*f);put(c,c0+i,row,`rgb(${v},${Math.floor(v*.6)},${Math.floor(v*.75)})`)}
+  }
+ }else if(t>9.35&&blink)put("_",Math.floor(COLS/2),row,BLUE);
+ // bloom glow
+ ctx.globalCompositeOperation="lighter";ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality="high";
+ for(const sc of small){
+  sc.getContext("2d").drawImage(cv,0,0,sc.width,sc.height);
+  ctx.drawImage(sc,0,0,W,H);
+ }
+ requestAnimationFrame(frame);
+}
+const replay=()=>{start=performance.now()};
+addEventListener("keydown",e=>{if(e.code==="Space"){e.preventDefault();replay()}});
+cv.addEventListener("click",replay);
+requestAnimationFrame(frame);
+</script></body></html>
